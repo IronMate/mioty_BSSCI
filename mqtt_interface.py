@@ -51,6 +51,7 @@ class MQTTClient:
 
 
 if __name__ == "__main__":
+    import sys
 
     async def send_mqtt(mqtt_out_queue: asyncio.Queue[dict[str, str]]) -> None:
         eui = "0123456789abcdef"
@@ -95,7 +96,10 @@ if __name__ == "__main__":
         mqtt_server = MQTTClient(mqtt_out_queue, mqtt_in_queue)
         await asyncio.gather(mqtt_server.start(), send_mqtt(mqtt_out_queue))
 
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    if sys.platform.startswith("win"):
+        policy_cls = getattr(asyncio, "WindowsSelectorEventLoopPolicy", None)
+        if policy_cls is not None:
+            asyncio.set_event_loop_policy(policy_cls())
     asyncio.run(main())
     while 1:
         pass
