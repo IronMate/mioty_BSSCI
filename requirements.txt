@@ -1,3 +1,5 @@
-asyncio-mqtt
+aiomqtt>=2.4.0
 msgpack>=1.0.7
+typing_extensions>=4.14.1
+
 
