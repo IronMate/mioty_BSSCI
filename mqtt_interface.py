@@ -1,9 +1,18 @@
 import asyncio
 import json
+import logging
 
 from aiomqtt import Client
 
-from bssci_config import BASE_TOPIC, MQTT_BROKER
+from bssci_config import BASE_TOPIC, MQTT_BROKER, MQTT_USERNAME, MQTT_PASSWORD, MQTT_LOGGING_ENABLED
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger('MQTT_Interface')
+logger.disabled = not MQTT_LOGGING_ENABLED
 
 
 class MQTTClient:
@@ -22,13 +31,28 @@ class MQTTClient:
         self.mqtt_in_queue = mqtt_in_queue
 
     async def start(self) -> None:
-        async with Client(self.broker_host) as client:
-            await asyncio.gather(
-                self._handle_incoming(client), self._handle_outgoing(client)
-            )
+        logger.info(f"Connecting to MQTT broker at {self.broker_host}")
+        if MQTT_USERNAME != None and MQTT_PASSWORD != None:
+            logger.info("Using MQTT authentication")
+            async with Client(
+                hostname=self.broker_host,
+                username=MQTT_USERNAME,
+                password=MQTT_PASSWORD,
+            ) as client:
+                logger.info("MQTT client connected successfully")
+                await asyncio.gather(
+                    self._handle_incoming(client), self._handle_outgoing(client)
+                )
+        else:
+            async with Client(hostname=self.broker_host) as client:
+                logger.info("MQTT client connected successfully")
+                await asyncio.gather(
+                    self._handle_incoming(client), self._handle_outgoing(client)
+                )
 
     async def _handle_incoming(self, client: Client) -> None:
         await client.subscribe(self.config_topic)
+        logger.info(f"Subscribed to topic: {self.config_topic}")
         async for message in client.messages:
             eui = str(message.topic).split("/")[len(self.base_topic.split("/")) + 1]
             payload = message.payload
@@ -37,17 +61,18 @@ class MQTTClient:
             elif isinstance(payload, str):
                 config = json.loads(payload)
             else:
+                logger.error(f"Unsupported payload type: {type(payload)}")
                 raise TypeError(f"Unsupported payload type: {type(payload)}")
             config["eui"] = eui
-            # print("Konfig erhalten:", config)
+            logger.debug(f"Received config for EUI {eui}: {config}")
             await self.mqtt_in_queue.put(config)
 
     async def _handle_outgoing(self, client: Client) -> None:
-        print(type(client))
         while True:
             msg = await self.mqtt_out_queue.get()
-            # print(f"{self.base_topic}/{msg['topic']}:\n\t{msg['payload']}")
-            await client.publish(f"{self.base_topic}/{msg['topic']}", msg["payload"])
+            topic = f"{self.base_topic}/{msg['topic']}"
+            logger.debug(f"Publishing to {topic}: {msg['payload']}")
+            await client.publish(topic, msg["payload"])
 
 
 if __name__ == "__main__":

@@ -1,11 +1,20 @@
 import asyncio
 import json
 import ssl
+import logging
 from typing import Any, Dict
 
 import bssci_config
 import messages
 from protocol import decode_messages, encode_message
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,  
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger('TLS_Server')
+logger.disabled = not bssci_config.MQTT_LOGGING_ENABLED
 
 IDENTIFIER = bytes("MIOTYB01", "utf-8")
 
@@ -26,7 +35,9 @@ class TLSServer:
         try:
             with open(sensor_config_file, "r") as f:
                 self.sensor_config = json.load(f)
-        except Exception:
+                logger.info(f"Loaded sensor configuration from {sensor_config_file} with {len(self.sensor_config)} sensors")
+        except Exception as e:
+            logger.warning(f"Failed to load sensor config: {e}")
             self.sensor_config = {}
 
     async def start_server(self) -> None:
@@ -58,7 +69,7 @@ class TLSServer:
                 and len(sensor["nwKey"]) == 32
                 and len(sensor["shortAddr"]) == 4
             ):
-                print(f"Sensor: {sensor['eui']} {sensor['shortAddr']}")
+                logger.info(f"Sending attach request for sensor: {sensor['eui']} {sensor['shortAddr']}")
                 msg_pack = encode_message(
                     messages.build_attach_request(sensor, self.opID)
                 )
@@ -69,8 +80,8 @@ class TLSServer:
                 )
                 await writer.drain()
                 self.opID -= 1
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error sending attach request: {e}")
 
     async def attach_file(self, writer: asyncio.streams.StreamWriter) -> None:
         for sensor in self.sensor_config:
@@ -96,7 +107,7 @@ class TLSServer:
         self, reader: asyncio.streams.StreamReader, writer: asyncio.streams.StreamWriter
     ) -> None:
         addr = writer.get_extra_info("peername")
-        print(f"[INFO] Verbindung von {addr} hergestellt.")
+        logger.info(f"New connection established from {addr}")
 
         try:
             while True:
@@ -109,6 +120,7 @@ class TLSServer:
                     msg_type = message.get("command", "")
                     # print(msg_type)
                     if msg_type == "con":
+                        logger.debug(f"Connection request from BS EUI: {message.get('bsEui', 'unknown')}")
                         msg = encode_message(
                             messages.build_connection_response(
                                 message.get("opId", ""), message.get("snBsUuid", "")
@@ -126,6 +138,8 @@ class TLSServer:
                             writer in self.connecting_base_stations
                             and writer not in self.connected_base_stations
                         ):
+                            bs_eui = self.connecting_base_stations[writer]
+                            logger.info(f"Base station {bs_eui} successfully connected")
                             self.connected_base_stations[writer] = (
                                 self.connecting_base_stations[writer]
                             )
@@ -133,6 +147,7 @@ class TLSServer:
                             asyncio.create_task(self.send_status_requests())
 
                     elif msg_type == "ping":
+                        logger.debug("Ping request received")
                         # print("[PING] Ping-Anfrage empfangen.")
                         msg_pack = encode_message(
                             messages.build_ping_response(message.get("opId", ""))
@@ -148,6 +163,7 @@ class TLSServer:
                         pass
 
                     elif msg_type == "statusRsp":
+                        logger.debug(f"Status response from BS {self.connected_base_stations[writer]}")
                         data_dict = {
                             "code": message["code"],
                             "memLoad": message["memLoad"],
@@ -185,7 +201,7 @@ class TLSServer:
 
                     elif msg_type == "ulData":
                         eui = int(message["epEui"]).to_bytes(8, byteorder="big").hex()
-                        print(message)
+                        logger.debug(f"Uplink data received from endpoint {eui}")
                         data_dict = {
                             "bs_eui": self.connected_base_stations[writer],
                             "rxTime": message["rxTime"],
@@ -213,21 +229,22 @@ class TLSServer:
                     elif msg_type == "detachResp":
                         eui = message.get("eui", "unknown")
                         result = message.get("resultCode", -1)
-                        status = "OK" if result == 0 else f"Fehler {result}"
-                        print(f"[DETACH] {eui} {status}")
+                        status = "OK" if result == 0 else f"Error {result}"
+                        logger.info(f"Detach response for {eui}: {status}")
 
                     else:
-                        print(f"[WARN] Unbekannte Nachricht: {message}")
+                        logger.warning(f"Unknown message type received: {message}")
 
                     # except Exception as e:
                     #    print(f"[ERROR] Fehler beim Dekodieren der Nachricht: {e}")
 
         except Exception as e:
-            print(f"[ERROR] Fehler bei Verbindung {addr}: {e}")
+            logger.error(f"Connection error for {addr}: {e}")
         finally:
             with open(self.sensor_config_file, "w") as f:
                 json.dump(self.sensor_config, f, indent=4)
-            print(f"[INFO] Verbindung zu {addr} geschlossen.")
+                logger.info(f"Saved sensor configuration to {self.sensor_config_file}")
+            logger.info(f"Connection closed to {addr}")
             writer.close()
             await writer.wait_closed()
             if writer in self.connected_base_stations:
@@ -252,11 +269,13 @@ class TLSServer:
     def update_or_add_entry(self, msg: dict[str, Any]) -> None:
         for sensor in self.sensor_config:
             if sensor["eui"].lower() == msg["eui"].lower():
+                logger.info(f"Updating configuration for sensor {msg['eui']}")
                 sensor["nwKey"] = msg["nwKey"]
                 sensor["shortAddr"] = msg["shortAddr"]
                 sensor["bidi"] = msg["bidi"]
                 return  # Eintrag wurde aktualisiert
 
+        logger.info(f"Adding new sensor configuration for {msg['eui']}")
         # Wenn kein Eintrag gefunden wurde → neu hinzufügen
         self.sensor_config.append(
             {
