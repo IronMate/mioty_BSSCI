@@ -32,15 +32,23 @@ class MQTTClient:
 
     async def start(self) -> None:
         logger.info(f"Connecting to MQTT broker at {self.broker_host}")
-        async with Client(
-            hostname=self.broker_host,
-            username=MQTT_USERNAME,
-            password=MQTT_PASSWORD,
-        ) as client:
-            logger.info("MQTT client connected successfully")
-            await asyncio.gather(
-                self._handle_incoming(client), self._handle_outgoing(client)
-            )
+        if MQTT_USERNAME != None and MQTT_PASSWORD != None:
+            logger.info("Using MQTT authentication")
+            async with Client(
+                hostname=self.broker_host,
+                username=MQTT_USERNAME,
+                password=MQTT_PASSWORD,
+            ) as client:
+                logger.info("MQTT client connected successfully")
+                await asyncio.gather(
+                    self._handle_incoming(client), self._handle_outgoing(client)
+                )
+        else:
+            async with Client(hostname=self.broker_host) as client:
+                logger.info("MQTT client connected successfully")
+                await asyncio.gather(
+                    self._handle_incoming(client), self._handle_outgoing(client)
+                )
 
     async def _handle_incoming(self, client: Client) -> None:
         await client.subscribe(self.config_topic)
